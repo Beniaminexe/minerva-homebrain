@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+env/
+*.sqlite3
+
+# IDEs
+.vscode/
+.idea/
+
+# Mypy / pytest / coverage
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+EOF
