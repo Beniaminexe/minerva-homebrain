@@ -1,7 +1,8 @@
 from datetime import datetime, time
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Time, ForeignKey
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from ..core.database import Base
+
 
 
 class Reminder(Base):
