@@ -19,3 +19,6 @@ env/
 .coverage
 htmlcov/
 .env
+
+# ESP32 examples
+esp32/**/config.h
