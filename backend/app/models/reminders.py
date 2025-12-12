@@ -13,7 +13,7 @@ class Reminder(Base):
     description = Column(String, nullable=True)
 
     schedule_kind = Column(String, nullable=False)   # DAILY, WEEKLY, ONE_OFF
-    time_of_day = Column(Time, nullable=False)
+    time_of_day = Column(Time, nullable=True)
 
     days_of_week = Column(String, nullable=True)     # comma-separated "1,3,5"
     one_off_at = Column(DateTime, nullable=True)
@@ -44,6 +44,7 @@ class ReminderOccurrence(Base):
 
     done_at = Column(DateTime, nullable=True)
     skipped_at = Column(DateTime, nullable=True)
+    alerted_at = Column(DateTime, nullable=True)
     note = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

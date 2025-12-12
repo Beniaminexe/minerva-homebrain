@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Service, ServiceStatus
 from .database import SessionLocal
+from .notifications import emit_notification
 
 
 async def check_http(target: str, timeout_sec: int) -> Tuple[bool, Optional[float]]:
@@ -68,11 +69,18 @@ async def service_checker_loop(interval_seconds: int = 30):
         try:
             services = db.query(Service).filter(Service.enabled == True).all()
 
-            for s in services:
-                is_up, latency = await check_one_service(s)
+            now = datetime.utcnow()
 
-                now = datetime.utcnow()
+            for s in services:
                 status = s.status
+
+                # Respect per-service check interval
+                if status and status.last_checked_at:
+                    elapsed = (now - status.last_checked_at).total_seconds()
+                    if elapsed < s.check_interval_sec:
+                        continue
+
+                is_up, latency = await check_one_service(s)
 
                 if status is None:
                     # create a new status row
@@ -85,25 +93,42 @@ async def service_checker_loop(interval_seconds: int = 30):
                         last_change_at=now,
                     )
                     db.add(status)
+                    previous_state = None
                 else:
-                    # update existing
-                    before = status.is_up
+                    previous_state = status.is_up
                     status.is_up = is_up
                     status.latency_ms = latency
                     status.last_checked_at = now
 
                     if is_up:
                         # service recovered
-                        if not before:
+                        if not previous_state:
                             status.last_change_at = now
                         status.consecutive_failures = 0
                     else:
                         # still failing
-                        if before:
+                        if previous_state:
                             status.last_change_at = now
                         status.consecutive_failures += 1
 
                 db.commit()
+
+                # Emit alerts when state flips, respecting alert flags
+                if previous_state is not None and previous_state != status.is_up:
+                    if (not status.is_up and s.alert_on_down) or (
+                        status.is_up and s.alert_on_recovery
+                    ):
+                        await emit_notification(
+                            {
+                                "channel": "service",
+                                "service_id": s.id,
+                                "name": s.name,
+                                "slug": s.slug,
+                                "is_up": status.is_up,
+                                "latency_ms": status.latency_ms,
+                                "changed_at": status.last_change_at,
+                            }
+                        )
 
         finally:
             db.close()

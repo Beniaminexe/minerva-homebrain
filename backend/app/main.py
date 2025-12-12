@@ -8,10 +8,13 @@ from .api.routes_reminders import router as reminders_router
 from .api.routes_occurrences import router as occurrences_router
 from .core.database import Base, engine, SessionLocal
 from .core.seed import seed_initial_data
-from .core.reminder_engine import occurrence_scheduler_loop
+from .core.reminder_engine import occurrence_scheduler_loop, ensure_schema_compatibility
 from .core.service_checker import service_checker_loop
 from .api.routes_services import router as services_router
 from .api.routes_words import router as words_router
+from .api.routes_telegram import router as telegram_router
+from .api.routes_notifications import router as notifications_router
+from .core.notifications import ensure_notification_schema
 
 
 
@@ -26,6 +29,10 @@ app = FastAPI(
 async def startup_event():
     # Create tables
     Base.metadata.create_all(bind=engine)
+
+    # Minimal schema compatibility (SQLite alter if missing)
+    ensure_schema_compatibility()
+    ensure_notification_schema()
 
     # Seed if empty
     db = SessionLocal()
@@ -48,3 +55,5 @@ app.include_router(reminders_router)
 app.include_router(occurrences_router)
 app.include_router(services_router)
 app.include_router(words_router)
+app.include_router(telegram_router)
+app.include_router(notifications_router)

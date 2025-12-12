@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..core.database import get_db
 from ..models import ReminderOccurrence
 
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/occurrences", tags=["occurrences"])
 
 class OccurrenceOut(BaseModel):
     id: int
-    reminder_id: int
+    reminder_id: int | None
     label: str
     due_at: datetime
     state: str
@@ -77,7 +78,20 @@ def list_occurrences(
     if reminder_id:
         q = q.filter(ReminderOccurrence.reminder_id == reminder_id)
 
-    occurrences = q.all()
+    # Filter out orphan rows and log a warning if found
+    orphan_count = (
+        db.query(ReminderOccurrence)
+        .filter(
+            ReminderOccurrence.due_at >= start,
+            ReminderOccurrence.due_at <= end,
+            ReminderOccurrence.reminder_id.is_(None),
+        )
+        .count()
+    )
+    if orphan_count:
+        print(f"[occurrences] skipping {orphan_count} orphan occurrences (reminder_id NULL)")
+
+    occurrences = q.filter(ReminderOccurrence.reminder_id.is_not(None)).all()
 
     result: List[OccurrenceOut] = []
     for o in occurrences:
@@ -93,6 +107,25 @@ def list_occurrences(
         )
 
     return result
+
+
+@router.post("/cleanup-orphans", response_model=dict)
+def cleanup_orphans(
+    confirm: bool = Query(False, description="Set true to delete orphan occurrences"),
+    db: Session = Depends(get_db),
+):
+    if settings.environment.lower() not in ("dev", "development", "test"):
+        raise HTTPException(status_code=403, detail="Cleanup only allowed in dev/test environments")
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to delete orphan occurrences")
+
+    deleted = (
+        db.query(ReminderOccurrence)
+        .filter(ReminderOccurrence.reminder_id.is_(None))
+        .delete()
+    )
+    db.commit()
+    return {"deleted": deleted}
 
 
 @router.post("/{occurrence_id}/done", response_model=OccurrenceStateChangeResponse)

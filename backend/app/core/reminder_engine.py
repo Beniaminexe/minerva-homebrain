@@ -1,10 +1,15 @@
+from __future__ import annotations
+
+import asyncio
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..models import Reminder, ReminderOccurrence
-from .database import SessionLocal
+from ..models import Reminder, ReminderOccurrence, TelegramChat
+from .database import SessionLocal, engine
+from .notifications import emit_notification
 
 
 def _parse_days_of_week(days_str: Optional[str]) -> list[int]:
@@ -52,6 +57,9 @@ def ensure_occurrences_for_date(db: Session, target_date: date) -> int:
     for r in reminders:
         if not reminder_should_fire_on(r, target_date):
             continue
+        if not r.id:
+            print("[reminder_engine] skipping reminder without id")
+            continue
 
         # Does an occurrence already exist for this reminder on this date?
         existing = (
@@ -66,7 +74,11 @@ def ensure_occurrences_for_date(db: Session, target_date: date) -> int:
         if existing:
             continue
 
-        due_at = datetime.combine(target_date, r.time_of_day)
+        if kind == "ONE_OFF" and r.one_off_at:
+            due_at = r.one_off_at
+        else:
+            due_at = datetime.combine(target_date, r.time_of_day)
+
         window_start = due_at - timedelta(minutes=r.grace_before_min or 0)
         window_end = due_at + timedelta(minutes=r.grace_after_min or 0)
 
@@ -88,7 +100,18 @@ def ensure_occurrences_for_date(db: Session, target_date: date) -> int:
 
 # ---------- Background scheduler ----------
 
-import asyncio
+
+def ensure_schema_compatibility() -> None:
+    """
+    Lightweight migration to ensure required columns exist (SQLite).
+    """
+    with engine.begin() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(reminder_occurrences)"))
+        }
+        if "alerted_at" not in cols:
+            conn.execute(text("ALTER TABLE reminder_occurrences ADD COLUMN alerted_at DATETIME"))
 
 
 async def occurrence_scheduler_loop(interval_seconds: int = 60) -> None:
@@ -99,9 +122,50 @@ async def occurrence_scheduler_loop(interval_seconds: int = 60) -> None:
         db = SessionLocal()
         try:
             today = date.today()
-            created = ensure_occurrences_for_date(db, today)
-            # You can add logging here later if you want
-            # print(f"[occurrence_scheduler] created {created} occurrences for {today}")
+            ensure_occurrences_for_date(db, today)
+
+            now = datetime.utcnow()
+
+            # Mark overdue pending occurrences as missed
+            missed_occ = db.query(ReminderOccurrence).filter(
+                ReminderOccurrence.state == "PENDING",
+                ReminderOccurrence.window_end_at.is_not(None),
+                ReminderOccurrence.window_end_at < now,
+            ).all()
+            for occ in missed_occ:
+                occ.state = "MISSED"
+                occ.updated_at = now
+            if missed_occ:
+                db.commit()
+
+            # Notify due occurrences (once per occurrence)
+            chats = db.query(TelegramChat).filter(TelegramChat.enabled == True).all()
+            due_occ = db.query(ReminderOccurrence).filter(
+                ReminderOccurrence.state == "PENDING",
+                ReminderOccurrence.due_at <= now,
+                ReminderOccurrence.alerted_at.is_(None),
+            ).all()
+
+            for occ in due_occ:
+                label = occ.reminder.label if occ.reminder else "Reminder"
+                text = f"⏰ Reminder: {label} ({occ.due_at.strftime('%H:%M')})"
+                due_at_iso = occ.due_at.isoformat()
+
+                for chat in chats:
+                    await emit_notification(
+                        {
+                            "channel": "telegram",
+                            "chat_id": chat.chat_id,
+                            "text": text,
+                            "occurrence_id": occ.id,
+                            "label": label,
+                            "due_at": due_at_iso,
+                        }
+                    )
+                occ.alerted_at = now
+                occ.updated_at = now
+            if due_occ:
+                db.commit()
         finally:
             db.close()
 
